@@ -12,15 +12,13 @@ module Tiddle
       self.maximum_tokens_per_user = maximum_tokens_per_user
     end
 
-    def create_and_return_token(resource, request)
+    def create_and_return_token(resource, request, expires_in: nil)
       token_class = authentication_token_class(resource)
       token, token_body = Devise.token_generator.generate(token_class, :body)
 
-      resource.authentication_tokens
-              .create! body: token_body,
-                       last_used_at: DateTime.current,
-                       ip_address: request.remote_ip,
-                       user_agent: request.user_agent
+      resource.authentication_tokens.create!(
+        token_attributes(token_body, request, expires_in)
+      )
 
       token
     end
@@ -33,9 +31,8 @@ module Tiddle
     def find_token(resource, token_from_headers)
       token_class = authentication_token_class(resource)
       token_body = Devise.token_generator.digest(token_class, :body, token_from_headers)
-      resource.authentication_tokens.detect do |token|
-        Devise.secure_compare(token.body, token_body)
-      end
+      # 'find_by' behaves differently in AR vs Mongoid, so using 'where' instead
+      resource.authentication_tokens.where(body: token_body).first
     end
 
     def purge_old_tokens(resource)
@@ -50,7 +47,28 @@ module Tiddle
     attr_accessor :maximum_tokens_per_user
 
     def authentication_token_class(resource)
-      resource.association(:authentication_tokens).klass
+      if resource.respond_to?(:association) # ActiveRecord
+        resource.association(:authentication_tokens).klass
+      elsif resource.respond_to?(:relations) # Mongoid
+        resource.relations['authentication_tokens'].klass
+      else
+        raise 'Cannot determine authentication token class, unsupported ORM/ODM?'
+      end
+    end
+
+    def token_attributes(token_body, request, expires_in)
+      attributes = {
+        body: token_body,
+        last_used_at: Time.current,
+        ip_address: request.remote_ip,
+        user_agent: request.user_agent
+      }
+
+      if expires_in
+        attributes.merge(expires_in: expires_in)
+      else
+        attributes
+      end
     end
   end
 end
